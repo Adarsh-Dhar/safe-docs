@@ -117,37 +117,8 @@ async function fetchWithTimeout(
   }
 }
 
-async function discoverApiBase(): Promise<string | null> {
-  const hostCandidates = Array.from(new Set([
-    window.location.hostname || "localhost",
-    "127.0.0.1",
-    "localhost",
-  ]));
-
-  const ports = Array.from({ length: 11 }, (_, i) => 5000 + i);
-
-  for (const host of hostCandidates) {
-    for (const port of ports) {
-      try {
-        const base = `http://${host}:${port}`;
-        const res = await fetchWithTimeout(`${base}/api/health`, {}, 5000);
-        
-        // FIX: Don't just check res.ok. Validate the JSON payload 
-        // to ensure it's the actual SafeLeak backend.
-        if (res.ok) {
-          const data = await res.json();
-          // Check if response has the expected health structure (walrus and/or gemini fields)
-          if (data && (data.walrus !== undefined || data.gemini !== undefined)) {
-            return base;
-          }
-        }
-      } catch {
-        // Not our backend or not JSON, try next candidate
-      }
-    }
-  }
-
-  return null;
+function discoverApiBase(): string {
+  return window.location.origin;
 }
 
 function statusTextFor(value: unknown, ok: string, fail: string): string {
@@ -166,15 +137,8 @@ function SafeLeakHome() {
     let cancelled = false;
 
     async function loadHealth(): Promise<void> {
-      const base = await discoverApiBase();
+      const base = discoverApiBase();
       if (cancelled) {
-        return;
-      }
-
-      if (!base) {
-        setWalrusStatus("offline");
-        setGithubModelsStatus("unavailable");
-        setMessage("Backend not found. Start run.sh first.");
         return;
       }
 
@@ -208,18 +172,23 @@ function SafeLeakHome() {
   }, []);
 
   async function onScrub(): Promise<void> {
-    if (!selectedFile || !apiBase) {
+    if (!selectedFile) {
       return;
     }
 
     setBusy(true);
     setMessage(null);
 
+    const base = apiBase ?? discoverApiBase();
+    if (!apiBase) {
+      setApiBase(base);
+    }
+
     try {
       const form = new FormData();
       form.append("document", selectedFile);
 
-      const res = await fetch(`${apiBase}/api/scrub`, {
+      const res = await fetch(`${base}/api/scrub`, {
         method: "POST",
         body: form,
       });
@@ -320,7 +289,7 @@ function SafeLeakHome() {
           <button
             type="button"
             onClick={() => void onScrub()}
-            disabled={!selectedFile || !apiBase || busy}
+            disabled={!selectedFile || busy}
             className="mt-6 px-4 py-2 rounded-md bg-emerald-500 text-slate-950 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {busy ? "Scrubbing..." : "Scrub + Upload"}
