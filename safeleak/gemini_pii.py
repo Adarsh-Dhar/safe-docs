@@ -2,25 +2,12 @@ import json
 import logging
 import os
 
-import google.generativeai as genai
+import requests
 
 logger = logging.getLogger(__name__)
 
-GEMINI_MODEL = "gemini-2.5-flash"
-
-_model = None
-
-
-def _get_model():
-    global _model
-    if _model is None:
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            raise RuntimeError("GEMINI_API_KEY environment variable not set")
-        genai.configure(api_key=api_key)
-        _model = genai.GenerativeModel(GEMINI_MODEL)
-        logger.info(f"Gemini model loaded: {GEMINI_MODEL}")
-    return _model
+GITHUB_MODELS_ENDPOINT = "https://models.inference.ai.azure.com/chat/completions"
+GITHUB_MODEL = "gpt-4o"
 
 
 SYSTEM_PROMPT = """You are a PII (Personally Identifiable Information) detection expert.
@@ -29,7 +16,7 @@ Analyse the following text and identify ALL instances of sensitive personal info
 Return a JSON array of findings. Each finding must have exactly these fields:
 - "type": one of PERSON, EMAIL_ADDRESS, PHONE_NUMBER, LOCATION, DATE_TIME, CREDIT_CARD, IBAN_CODE, CRYPTO, IP_ADDRESS, MEDICAL_LICENSE, NRP, PASSPORT, DRIVER_LICENSE, SSN, BANK_ACCOUNT, URL, USERNAME, PASSWORD, API_KEY, SECRET_KEY, OTHER_PII
 - "score": a float between 0.0 and 1.0 representing your confidence
-- "method": always "gemini"
+- "method": always "github_models"
 - "context": a very brief description of what was found (e.g. "Full name", "UK phone number", "GPS coordinates") — do NOT include the actual value
 
 Return ONLY the JSON array with no markdown, no code fences, no explanation.
@@ -41,6 +28,17 @@ Text to analyse:
 
 def analyse_pii_with_gemini(text: str) -> dict:
     """
+    Backwards-compatible alias for analyse_pii_with_github_models.
+    Returns {"findings": [...], "status": "ok"}
+    or {"findings": [], "status": "unavailable", "error": "..."}
+    Never raises — always returns a dict so callers can proceed with Presidio results.
+    """
+    return analyse_pii_with_github_models(text)
+
+
+def analyse_pii_with_github_models(text: str) -> dict:
+    """
+    Analyse PII using GitHub Models gpt-4o endpoint.
     Returns {"findings": [...], "status": "ok"}
     or {"findings": [], "status": "unavailable", "error": "..."}
     Never raises — always returns a dict so callers can proceed with Presidio results.
@@ -49,10 +47,36 @@ def analyse_pii_with_gemini(text: str) -> dict:
         return {"findings": [], "status": "ok"}
 
     try:
-        model = _get_model()
+        token = os.environ.get("GITHUB_TOKEN")
+        if not token:
+            raise RuntimeError("GITHUB_TOKEN environment variable not set")
+
         prompt = SYSTEM_PROMPT + text[:8000]
-        response = model.generate_content(prompt)
-        raw = response.text.strip()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": GITHUB_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.3,
+            "max_tokens": 1024,
+        }
+
+        response = requests.post(
+            GITHUB_MODELS_ENDPOINT,
+            json=payload,
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        if not data.get("choices") or not data["choices"][0].get("message"):
+            logger.error(f"Unexpected response format: {data}")
+            return {"findings": [], "status": "unavailable", "error": "Invalid API response"}
+
+        raw = data["choices"][0]["message"].get("content", "").strip()
 
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -76,35 +100,35 @@ def analyse_pii_with_gemini(text: str) -> dict:
                 "type": entity_type,
                 "text": "[REDACTED]",
                 "score": round(score, 3),
-                "method": "gemini",
+                "method": "github_models",
                 "context": context,
             })
 
-        logger.info(f"Gemini PII analysis: {len(result)} findings")
+        logger.info(f"GitHub Models PII analysis: {len(result)} findings")
         return {"findings": result, "status": "ok"}
 
     except json.JSONDecodeError as e:
-        logger.error(f"Gemini returned non-JSON: {e}")
+        logger.error(f"GitHub Models returned non-JSON: {e}")
         return {"findings": [], "status": "unavailable", "error": f"JSON parse error: {e}"}
     except Exception as e:
-        logger.error(f"Gemini PII analysis failed: {e}")
+        logger.error(f"GitHub Models PII analysis failed: {e}")
         return {"findings": [], "status": "unavailable", "error": str(e)}
 
 
 def check_gemini() -> str:
-    """Live connectivity check — sends a minimal prompt. Returns 'ok' or error string."""
+    """Live connectivity check for GitHub Models. Returns 'ok' or error string."""
     try:
-        result = analyse_pii_with_gemini("test")
+        result = analyse_pii_with_github_models("test")
         return "ok" if result["status"] == "ok" else f"unavailable ({result.get('error', 'unknown')})"
     except Exception as e:
         return f"unavailable ({e})"
 
 
 def init_gemini() -> str:
-    """Load the model at startup. Returns 'loaded' or error string."""
-    try:
-        _get_model()
-        return "loaded"
-    except Exception as e:
-        logger.error(f"Gemini init failed: {e}")
-        return f"error: {e}"
+    """Initialize GitHub Models. Returns 'loaded' or error string."""
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        logger.warning("GITHUB_TOKEN not set - GitHub Models PII analysis will be unavailable")
+        return "unavailable"
+    logger.info("GitHub Models initialized with gpt-4o")
+    return "loaded"

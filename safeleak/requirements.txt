@@ -10,3 +10,4 @@ presidio-anonymizer
 spacy
 requests
 python-dotenv
+replit
