@@ -1,0 +1,12 @@
+# Run once after install: python -m spacy download en_core_web_lg
+
+flask
+flask-cors
+pymupdf
+python-docx
+Pillow
+presidio-analyzer
+presidio-anonymizer
+spacy
+requests
+python-dotenv

@@ -1,0 +1,363 @@
+Here are the exact fixes for all 5 issues, in order of priority:
+
+---
+
+## Fix 1 — Gemini graceful fallback
+
+**In `gemini_pii.py`**, wrap the entire API call in a try/except and return a structured result either way:
+
+```python
+def analyze_with_gemini(text: str) -> dict:
+    """Returns {"findings": [...], "status": "ok"} or {"findings": [], "status": "unavailable", "error": "..."}"""
+    try:
+        # your existing Gemini call here
+        findings = _call_gemini_api(text)
+        return {"findings": findings, "status": "ok"}
+    except Exception as e:
+        return {"findings": [], "status": "unavailable", "error": str(e)}
+```
+
+**In `scrubber.py`**, use the status field when merging results:
+
+```python
+gemini_result = analyze_with_gemini(text)
+gemini_findings = gemini_result["findings"]
+gemini_status = gemini_result["status"]
+
+# merge presidio + gemini findings
+all_pii = presidio_findings + gemini_findings
+
+return {
+    "pii_found": all_pii,
+    "pii_count": len(all_pii),
+    "gemini_status": gemini_status,  # "ok" or "unavailable"
+    ...
+}
+```
+
+**In `main.py`**, surface `gemini_status` in the response so the frontend can show it:
+
+```python
+# the scrub result dict already contains gemini_status
+# just make sure it flows through to the JSON response
+return jsonify(scrub_result), 200
+```
+
+**In `/api/health`**, add a live Gemini ping:
+
+```python
+def check_gemini():
+    try:
+        # minimal test call — single token, cheapest possible
+        result = analyze_with_gemini("test")
+        return "ok" if result["status"] == "ok" else "unavailable"
+    except:
+        return "unavailable"
+
+@app.route("/api/health")
+def health():
+    return jsonify({
+        "status": "ok",
+        "presidio": "loaded",
+        "spacy": "loaded",
+        "gemini": check_gemini(),
+        "walrus": check_walrus()  # added in Fix 3
+    })
+```
+
+**Add this test to your test suite:**
+
+```python
+def test_gemini_failure_falls_back_to_presidio(self):
+    """If Gemini is unavailable, scrub still succeeds with Presidio results."""
+    from unittest.mock import patch
+
+    # a txt file with a known PII item Presidio will catch
+    test_content = b"Contact John Smith at john@example.com for details."
+    data = {"document": (BytesIO(test_content), "test.txt", "text/plain")}
+
+    with patch("gemini_pii.analyze_with_gemini") as mock_gemini:
+        mock_gemini.return_value = {
+            "findings": [],
+            "status": "unavailable",
+            "error": "API quota exceeded"
+        }
+        response = self.client.post("/api/scrub",
+                                    content_type="multipart/form-data",
+                                    data=data)
+
+    self.assertEqual(response.status_code, 200)
+    result = response.get_json()
+
+    # scrub must succeed
+    self.assertEqual(result["status"], "success")
+
+    # Gemini status must be surfaced
+    self.assertEqual(result["gemini_status"], "unavailable")
+
+    # Presidio must still have found PII
+    self.assertGreater(result["pii_count"], 0)
+    methods = [item["method"] for item in result["pii_found"]]
+    self.assertIn("presidio", methods)
+    self.assertNotIn("gemini", methods)
+```
+
+---
+
+## Fix 2 — Persist jobs with Replit DB
+
+Replit has a built-in key-value store. The catch: it can't store raw bytes directly, so you base64-encode the clean file.
+
+**Replace your in-memory `JOBS = {}` in `main.py` with this:**
+
+```python
+import os
+import json
+import base64
+from replit import db  # built-in on Replit, no install needed
+
+def save_job(job_id: str, job_data: dict):
+    """Persist job to Replit DB. Encode bytes fields as base64."""
+    serializable = job_data.copy()
+    if "clean_bytes" in serializable:
+        serializable["clean_bytes"] = base64.b64encode(
+            serializable["clean_bytes"]
+        ).decode("utf-8")
+    db[f"job:{job_id}"] = json.dumps(serializable)
+
+def load_job(job_id: str) -> dict | None:
+    """Load job from Replit DB. Decode base64 bytes fields."""
+    raw = db.get(f"job:{job_id}")
+    if not raw:
+        return None
+    job_data = json.loads(raw)
+    if "clean_bytes" in job_data:
+        job_data["clean_bytes"] = base64.b64decode(job_data["clean_bytes"])
+    return job_data
+```
+
+**Update your `/api/scrub` route** — replace `JOBS[job_id] = {...}` with `save_job(job_id, {...})`.
+
+**Update your `/api/download/<job_id>` route:**
+
+```python
+@app.route("/api/download/<job_id>")
+def download(job_id):
+    job = load_job(job_id)  # was: JOBS.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found or expired"}), 404
+    return send_file(
+        BytesIO(job["clean_bytes"]),
+        download_name=f"clean_{job['filename']}",
+        as_attachment=True
+    )
+```
+
+**Add a note in the UI** as a belt-and-suspenders fallback. In `templates/index.html`, inside Card E (Download), add this beneath the download button:
+
+```html
+<p style="font-size: 12px; color: #888; margin-top: 8px;">
+  ⚠ Download link is valid for this session.
+  Your file is permanently stored on Walrus —
+  use the blobId above to retrieve it at any time.
+</p>
+```
+
+This means even if the DB lookup fails for any reason, the judge still has the Walrus URL as a recovery path.
+
+---
+
+## Fix 3 — Walrus connectivity check in `/health`
+
+Add this to `walrus_client.py`:
+
+```python
+def check_walrus_connectivity() -> str:
+    """Ping the Walrus aggregator info endpoint. Returns 'ok' or 'unavailable'."""
+    try:
+        response = requests.get(
+            "https://aggregator.walrus-testnet.walrus.space/v1/api",
+            timeout=5
+        )
+        if response.status_code == 200:
+            return "ok"
+        return f"degraded (HTTP {response.status_code})"
+    except requests.exceptions.Timeout:
+        return "unavailable (timeout)"
+    except Exception as e:
+        return f"unavailable ({str(e)[:50]})"
+```
+
+**Wire into `/api/health` in `main.py`:**
+
+```python
+from walrus_client import check_walrus_connectivity
+
+@app.route("/api/health")
+def health():
+    return jsonify({
+        "status": "ok",
+        "presidio": "loaded",
+        "spacy": "loaded",
+        "gemini": check_gemini(),
+        "walrus": check_walrus_connectivity()
+    })
+```
+
+**Frontend: show Walrus status on page load.** In `index.html`, add this to your JS startup:
+
+```javascript
+async function checkHealth() {
+    try {
+        const res = await fetch('/api/health');
+        const data = await res.json();
+
+        const walrusStatus = document.getElementById('walrus-status');
+        if (data.walrus === 'ok') {
+            walrusStatus.textContent = '● Walrus testnet: online';
+            walrusStatus.style.color = '#22c55e';
+        } else {
+            walrusStatus.textContent = `⚠ Walrus testnet: ${data.walrus}`;
+            walrusStatus.style.color = '#f59e0b';
+        }
+    } catch (e) {
+        console.error('Health check failed', e);
+    }
+}
+
+// run on page load
+checkHealth();
+```
+
+Add the status element somewhere visible in the header or footer of your HTML:
+
+```html
+<div id="walrus-status" style="font-size: 13px; font-family: monospace;"></div>
+```
+
+**Add this test:**
+
+```python
+def test_health_includes_walrus_status(self):
+    response = self.client.get("/api/health")
+    self.assertEqual(response.status_code, 200)
+    data = response.get_json()
+    self.assertIn("walrus", data)
+    # value should be a string, either "ok" or a description of the issue
+    self.assertIsInstance(data["walrus"], str)
+    self.assertGreater(len(data["walrus"]), 0)
+```
+
+---
+
+## Fix 4 — GPS manual test: step-by-step procedure
+
+Do this once before submission and save the screenshots.
+
+**Step 1 — Verify your test photo has GPS.** Go to [exifinfo.org](https://exifinfo.org), upload your phone photo, and confirm you see fields like `GPS Latitude`, `GPS Longitude`, `GPS Altitude`. Screenshot this. Label it `before_upload.png`.
+
+**Step 2 — Upload to SafeLeak.** Use your deployed Replit URL (not localhost). Screenshot the scrub report showing GPS coordinates in the "What Was Removed" card. Label it `gps_detected.png`.
+
+**Step 3 — Download the clean image.** Upload the downloaded clean file to [exifinfo.org](https://exifinfo.org) again. Confirm GPS fields are gone. Screenshot this. Label it `after_clean.png`.
+
+**Step 4 — Document the Walrus receipt.** Screenshot the blobId and the working Walrus URL. Open the Walrus URL in a browser and screenshot that too. Label it `walrus_receipt.png`.
+
+Keep these 4 screenshots in a `/demo-evidence` folder in your repo. If Walrus is down during judging, you show `walrus_receipt.png` as proof it worked during development.
+
+**Also add this to your test file** as a documented manual test so it's not invisible:
+
+```python
+@unittest.skip("Manual test — requires real phone photo with GPS EXIF")
+def test_gps_stripping_manual(self):
+    """
+    MANUAL TEST PROCEDURE:
+    1. Take a photo on a phone (not a screenshot — needs real GPS EXIF)
+    2. Verify it has GPS at https://exifinfo.org — screenshot as before_upload.png
+    3. Upload to /api/scrub
+    4. Confirm response metadata_removed contains a string with 'GPS'
+    5. Download clean file, re-check at exifinfo.org — screenshot as after_clean.png
+    6. Save both screenshots to /demo-evidence/
+    
+    Expected: GPS Latitude, GPS Longitude absent from clean file EXIF.
+    """
+    # To run manually: remove @unittest.skip and provide a real photo path
+    with open("tests/fixtures/real_phone_photo.jpg", "rb") as f:
+        photo_bytes = f.read()
+    data = {"document": (BytesIO(photo_bytes), "photo.jpg", "image/jpeg")}
+    response = self.client.post("/api/scrub",
+                                content_type="multipart/form-data",
+                                data=data)
+    result = response.get_json()
+    removed_fields = " ".join(result.get("metadata_removed", []))
+    self.assertIn("GPS", removed_fields)
+```
+
+---
+
+## Fix 5 — Frontend manual walkthrough checklist
+
+Since automated browser testing (Selenium/Playwright) is overkill for a hackathon, do one structured manual pass against the **deployed Replit URL** — not localhost, because Replit's container sometimes behaves differently when deployed.
+
+Print this out and check each one:
+
+```
+BROWSER: Chrome or Firefox (not Safari — fetch() behaviour differs)
+URL: your deployed .repl.co URL
+
+PRE-FLIGHT
+[ ] Open DevTools (F12) → Console tab — confirm zero errors on page load
+[ ] Check the Walrus status indicator in the header — should show green "online"
+[ ] Check the Network tab — /api/health returned 200
+
+UPLOAD FLOW
+[ ] Drag and drop a PDF onto the drop zone — filename appears below zone
+[ ] Click the × to clear it (if you have a clear button), then use click-to-upload instead
+[ ] Try uploading a .zip — confirm error message appears, no crash
+[ ] Upload a real PDF with known metadata
+
+PIPELINE ANIMATION
+[ ] All 4 stage indicators appear immediately on upload
+[ ] Stage 1 shows spinner while processing
+[ ] Stages complete sequentially (not all at once)
+[ ] Progress bar fills across the top
+[ ] All 4 stages show green checkmark on completion
+
+SCRUB REPORT — CARD A (Integrity Proof)
+[ ] Original hash displayed, truncated correctly (16 chars + ...)
+[ ] Clean hash displayed and DIFFERENT from original hash
+[ ] Green shield icon visible
+
+SCRUB REPORT — CARD B (Metadata Removed)
+[ ] At least one metadata field listed for a real PDF
+[ ] Count badge shows correct number
+
+SCRUB REPORT — CARD C (PII Detection)
+[ ] Table renders with Type / Confidence / Method columns
+[ ] Confidence colours: red for >0.9, orange for 0.7–0.9, yellow below
+[ ] "gemini_status" shown somewhere (even just "AI engines: Presidio + Gemini ✓")
+
+SCRUB REPORT — CARD D (Walrus Receipt)
+[ ] blobId displayed in monospace
+[ ] Walrus URL is a clickable link — opens in new tab
+[ ] Walrus URL actually loads the file in the browser
+[ ] Copy button copies blobId — paste into notepad to verify
+[ ] "Stored on Walrus Testnet" badge visible
+
+SCRUB REPORT — CARD E (Download)
+[ ] Click Download — browser download dialog appears
+[ ] Downloaded filename starts with "clean_"
+[ ] Opened downloaded PDF is readable and not corrupted
+[ ] Session-scoped warning note visible below button
+
+EDGE CASES
+[ ] Refresh the page — upload again with a different file, full flow works second time
+[ ] Open in a mobile browser (or DevTools mobile emulation) — UI is usable
+[ ] Simulate Walrus being down: temporarily change WALRUS_PUBLISHER 
+    to a bad URL in walrus_client.py, restart, upload a file
+    → Confirm response still shows scrub results
+    → Card D shows error message instead of blobId
+    → No JS crash, no blank cards
+    → Revert the URL after testing
+```
+
+Once all 5 fixes are in place, your test count goes from 71 to 73 (the two new tests for Gemini fallback and Walrus health), your persistence risk is gone, and you have documented evidence for every claim you'll make during the demo. That gets you from 80% to fully demo-ready.

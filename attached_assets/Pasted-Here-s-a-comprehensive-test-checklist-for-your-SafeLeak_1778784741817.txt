@@ -1,0 +1,158 @@
+Here's a comprehensive test checklist for your SafeLeak MVP, organised by layer:
+
+---
+
+## 1. Startup & Health
+
+- [ ] App starts without errors in the Replit console
+- [ ] No import errors for presidio, spacy, pymupdf, python-docx
+- [ ] `GET /api/health` returns 200
+- [ ] Health response shows `"presidio": "loaded"` and `"spacy": "loaded"`
+- [ ] Console logs "Presidio + spaCy loaded" exactly once on startup (not on every request)
+
+---
+
+## 2. File Upload — Validation
+
+- [ ] Uploading with no file returns 400 with a clear error message
+- [ ] Uploading an unsupported file type (e.g. `.zip`, `.exe`, `.csv`) returns 400 with `"Unsupported file type"` message
+- [ ] Uploading a file over 10MB returns 400 with a size error
+- [ ] Uploading a completely empty file (0 bytes) doesn't crash the server — returns a handled error
+- [ ] Uploading a file with a valid extension but corrupted content (e.g. rename a `.zip` to `.pdf`) doesn't crash — returns a handled error
+
+---
+
+## 3. Metadata Stripping — PDF
+
+Prepare a test PDF that has metadata embedded. You can create one in Microsoft Word > Save as PDF, or use Adobe Acrobat. Then:
+
+- [ ] Upload the PDF and confirm `metadata_removed` in the response is not an empty list
+- [ ] `Author` field appears in `metadata_removed` if it was set
+- [ ] `Creator` or `Producer` field appears if set
+- [ ] Download the clean PDF and open it in a PDF viewer — check File > Properties > Description and confirm all fields are blank
+- [ ] The clean PDF still opens and is readable (content not corrupted)
+- [ ] A PDF with no metadata returns an empty `metadata_removed` list without errors
+- [ ] Upload a password-protected PDF — confirm it returns a handled error, not a 500 crash
+
+---
+
+## 4. Metadata Stripping — DOCX
+
+Create a Word document, go to File > Info > Properties and set Author, Title, Subject, Company. Save as `.docx`. Then:
+
+- [ ] Upload the DOCX and confirm `Author` appears in `metadata_removed`
+- [ ] `last_modified_by` appears in `metadata_removed` if set
+- [ ] Download the clean DOCX, open in Word, check File > Info > Properties — all fields should be blank
+- [ ] Document text and formatting is preserved in the clean file
+- [ ] A DOCX with no core properties set doesn't crash — returns empty `metadata_removed`
+
+---
+
+## 5. Metadata Stripping — Images
+
+Take a photo on your phone (JPGs from phone cameras contain rich EXIF including GPS). Then:
+
+- [ ] Upload the JPG and confirm `metadata_removed` contains GPS coordinates
+- [ ] `Make` (camera brand) and `Model` appear in `metadata_removed`
+- [ ] `DateTime` appears in `metadata_removed`
+- [ ] The returned clean image still opens correctly and is visually identical
+- [ ] Upload a PNG with no EXIF — returns empty `metadata_removed` without errors
+- [ ] Upload a screenshot (usually has no metadata) — handles gracefully
+
+---
+
+## 6. AI PII Detection
+
+Prepare test documents with known PII. A plain `.txt` file is easiest to control. Test cases:
+
+- [ ] A document containing a full name (e.g. "John Smith") — `PERSON` entity appears in `pii_found`
+- [ ] A document with an email address — `EMAIL_ADDRESS` appears with score > 0.95
+- [ ] A document with a UK/US phone number — `PHONE_NUMBER` detected
+- [ ] A document with a physical address — `LOCATION` detected
+- [ ] A document with a date of birth — `DATE_TIME` detected
+- [ ] A document with a credit card number — `CREDIT_CARD` detected
+- [ ] A completely clean document (lorem ipsum) — `pii_found` is empty list, `pii_count` is 0
+- [ ] A document with multiple PII types — all appear in the response
+- [ ] Confidence scores are between 0 and 1 for all items
+- [ ] No PII original text is returned in the response (only `[REDACTED]` placeholder — you must not leak what was found)
+
+---
+
+## 7. Hashing & Integrity
+
+- [ ] `original_hash` and `clean_hash` are both 64-character hex strings (SHA-256)
+- [ ] Upload the exact same file twice — both jobs return the same `original_hash`
+- [ ] A file with metadata stripped produces a different `clean_hash` from `original_hash` (hashes differ because bytes changed)
+- [ ] A plain `.txt` file with no metadata: `original_hash` and `clean_hash` may be identical (nothing was stripped)
+- [ ] `original_hash` never equals `clean_hash` for any file that had metadata removed
+
+---
+
+## 8. Walrus Integration
+
+- [ ] A successful upload returns a non-null `walrus_blob_id`
+- [ ] `walrus_blob_id` is a non-empty string (typically a base64-like identifier)
+- [ ] `walrus_url` is a properly formed URL starting with `https://aggregator.walrus-testnet.walrus.space/v1/blobs/`
+- [ ] Opening `walrus_url` in a browser returns the clean file bytes (verify you can download it)
+- [ ] Uploading the same file twice returns the same `walrus_blob_id` (Walrus deduplicates by content hash — this is expected and correct)
+- [ ] If Walrus is unreachable (test by temporarily using a wrong URL), the API still returns 200 with `walrus_blob_id: null` and a `walrus_error` message — the scrub result is not lost
+- [ ] The `walrus_url` in the frontend is clickable and opens in a new tab
+
+---
+
+## 9. Download Route
+
+- [ ] `GET /api/download/{job_id}` returns the clean file bytes
+- [ ] The `Content-Disposition` header triggers a browser download (not inline display)
+- [ ] The downloaded filename is something like `clean_originalname.pdf` (not a UUID)
+- [ ] Requesting a non-existent `job_id` returns 404, not a 500 crash
+- [ ] The downloaded file is valid: clean PDF opens in a viewer, clean DOCX opens in Word
+
+---
+
+## 10. Frontend UI
+
+- [ ] Page loads without console errors (check browser DevTools > Console)
+- [ ] Drag and drop a file onto the upload zone — it registers the file
+- [ ] Click-to-upload opens the file picker correctly
+- [ ] After selecting a file, the filename and size display below the drop zone
+- [ ] Uploading triggers the pipeline UI — all 4 stages appear
+- [ ] Each stage shows a spinner while processing
+- [ ] All stages show green checkmarks on completion
+- [ ] The progress bar fills across the top as stages complete
+- [ ] The scrub report appears after completion
+- [ ] All 5 result cards render (Integrity Proof, What Was Removed, AI PII Detection, Walrus Receipt, Download)
+- [ ] SHA-256 hashes display in truncated form (first 16 chars + `...`)
+- [ ] The Walrus blobId is displayed in monospace font
+- [ ] "Copy to clipboard" button copies the blobId (test by pasting into a text editor)
+- [ ] The download button triggers a file download
+- [ ] If Walrus upload failed, the Walrus card shows the error message gracefully instead of crashing the UI
+- [ ] PII confidence colours are correct: red for >0.9, orange for 0.7–0.9, yellow below
+
+---
+
+## 11. Edge Cases & Stress
+
+- [ ] Upload two files in quick succession — both return separate `job_id` values with correct independent results
+- [ ] Upload a very large valid PDF (e.g. 9.9MB) — processes without timeout
+- [ ] Upload a `.txt` file that is just whitespace — doesn't crash, returns empty PII list
+- [ ] Upload a DOCX that contains only images (no text) — text extraction returns empty string, PII detection returns empty list
+- [ ] Upload a file with special characters in the filename (e.g. `report (2024) — final.pdf`) — filename is handled correctly
+- [ ] Rapidly refresh the page mid-upload — page recovers cleanly
+
+---
+
+## 12. End-to-End Smoke Test (run this last)
+
+This is the demo-day test. Do it in order:
+
+1. Take a real JPG photo from a phone (has GPS + camera metadata)
+2. Upload to SafeLeak
+3. Confirm GPS appears in `metadata_removed`
+4. Confirm Walrus blobId is returned
+5. Open the Walrus URL — confirm file is accessible
+6. Download the clean image
+7. Check the downloaded image's EXIF in a tool like [exifinfo.org](https://exifinfo.org) — confirm GPS and device info are gone
+8. The image is visually identical to the original
+
+If all 8 steps pass, your MVP is demo-ready. ✓
