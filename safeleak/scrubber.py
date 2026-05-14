@@ -23,11 +23,21 @@ def _get_analyzer() -> AnalyzerEngine:
 
 class ScrubberAgent:
     def __init__(self):
-        self.analyzer = _get_analyzer()
-        logger.info("ScrubberAgent ready")
+        self._analyzer = None  # lazy — don't load yet
+        logger.info("ScrubberAgent created (idle — waiting for document)")
+
+    @property
+    def analyzer(self):
+        """Lazy-load analyzer on first access."""
+        if self._analyzer is None:
+            logger.info("Document received — loading Presidio + spaCy now...")
+            self._analyzer = AnalyzerEngine()
+            logger.info("Presidio + spaCy ready")
+        return self._analyzer
 
     def scrub(self, file_bytes: bytes, filename: str) -> dict:
         ext = filename.rsplit(".", 1)[-1].lower()
+        logger.info(f"Agent activated — processing: {filename}")
         metadata_removed = []
         clean_bytes = file_bytes
 

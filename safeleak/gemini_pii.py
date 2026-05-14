@@ -7,7 +7,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 GITHUB_MODELS_ENDPOINT = "https://models.inference.ai.azure.com/chat/completions"
-GITHUB_MODEL = "gpt-4o"
+GITHUB_MODEL = "gpt-4o-mini"
 
 
 SYSTEM_PROMPT = """You are a PII (Personally Identifiable Information) detection expert.
@@ -38,7 +38,7 @@ def analyse_pii_with_gemini(text: str) -> dict:
 
 def analyse_pii_with_github_models(text: str) -> dict:
     """
-    Analyse PII using GitHub Models gpt-4o endpoint.
+    Analyse PII using GitHub Models gpt-4o-mini endpoint.
     Returns {"findings": [...], "status": "ok"}
     or {"findings": [], "status": "unavailable", "error": "..."}
     Never raises — always returns a dict so callers can proceed with Presidio results.
@@ -130,5 +130,5 @@ def init_gemini() -> str:
     if not token:
         logger.warning("GITHUB_TOKEN not set - GitHub Models PII analysis will be unavailable")
         return "unavailable"
-    logger.info("GitHub Models initialized with gpt-4o")
+    logger.info("GitHub Models initialized with gpt-4o-mini")
     return "loaded"

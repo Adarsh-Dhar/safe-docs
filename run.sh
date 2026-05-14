@@ -52,7 +52,20 @@ FRONTEND_PORT=$(resolve_port "$FRONTEND_PORT" "Frontend")
 # Cleanup function
 cleanup() {
     echo -e "\n${YELLOW}Stopping all services...${NC}"
+    
+    # Kill the processes
     kill $PYTHON_PID $API_SERVER_PID $FRONTEND_PID 2>/dev/null || true
+    
+    # Wait a moment for graceful shutdown
+    sleep 1
+    
+    # Force kill any remaining processes on the ports
+    echo -e "${YELLOW}Releasing ports...${NC}"
+    lsof -ti:${FLASK_PORT} | xargs kill -9 2>/dev/null || true
+    lsof -ti:${API_PORT} | xargs kill -9 2>/dev/null || true
+    lsof -ti:${FRONTEND_PORT} | xargs kill -9 2>/dev/null || true
+    
+    echo -e "${GREEN}✓ Ports released${NC}"
     exit 0
 }
 trap cleanup SIGINT SIGTERM
@@ -109,7 +122,7 @@ fi
 # 5. Check for GITHUB_TOKEN
 echo -e "\n${YELLOW}[5/7]${NC} Checking GitHub Models configuration..."
 if [ -z "$GITHUB_TOKEN" ]; then
-    echo -e "${YELLOW}⚠${NC}  GITHUB_TOKEN not set. GitHub Models (gpt-4o) will be unavailable."
+    echo -e "${YELLOW}⚠${NC}  GITHUB_TOKEN not set. GitHub Models (gpt-4o-mini) will be unavailable."
     echo -e "   To use GitHub Models for PII detection, set: export GITHUB_TOKEN='your_token'"
     echo -e "   Get a token at: https://github.com/settings/tokens (needs 'read:ai_models' scope)"
 else

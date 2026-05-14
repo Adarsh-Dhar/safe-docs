@@ -71,23 +71,15 @@ def _load_job(job_id: str) -> dict | None:
 
 
 # ── Startup ────────────────────────────────────────────────────────────────────
-logger.info("Initialising ScrubberAgent (loads Presidio + spaCy)...")
+logger.info("Initialising ScrubberAgent (idle mode — agent loads on first document)...")
 try:
-    scrubber = ScrubberAgent()
-    PRESIDIO_STATUS = "loaded"
-    SPACY_STATUS = "loaded"
-except OSError as e:
-    if "en_core_web_lg" in str(e):
-        logger.error("spaCy model missing. Run: python -m spacy download en_core_web_lg")
-        PRESIDIO_STATUS = "error"
-        SPACY_STATUS = "missing — run: python -m spacy download en_core_web_lg"
-        scrubber = None
-    else:
-        raise
+    scrubber = ScrubberAgent()  # Just creates the object, loads nothing
+    logger.info("Server ready — agent idle, waiting for document upload")
+except Exception as e:
+    logger.error(f"Failed to create ScrubberAgent: {e}")
+    scrubber = None
 
-from gemini_pii import check_gemini, init_gemini
-GEMINI_INIT_STATUS = init_gemini()
-logger.info(f"Gemini init: {GEMINI_INIT_STATUS}")
+from gemini_pii import check_gemini
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -99,10 +91,12 @@ def index():
 @app.route("/health")
 @app.route("/api/health")
 def health():
+    agent_state = "loaded" if scrubber and scrubber._analyzer is not None else "idle"
     return jsonify({
         "status": "ok",
-        "presidio": PRESIDIO_STATUS,
-        "spacy": SPACY_STATUS,
+        "agent_state": agent_state,
+        "presidio": "loaded" if scrubber and scrubber._analyzer is not None else "idle",
+        "spacy": "loaded" if scrubber and scrubber._analyzer is not None else "idle",
         "gemini": check_gemini(),
         "walrus": check_walrus_connectivity(),
     })
@@ -112,7 +106,7 @@ def health():
 @app.route("/api/scrub", methods=["POST"])
 def scrub():
     if scrubber is None:
-        return jsonify({"error": SPACY_STATUS}), 500
+        return jsonify({"error": "ScrubberAgent failed to initialize. Check logs for details."}), 500
 
     if "document" not in request.files:
         return jsonify({"error": "No file uploaded. Use field name 'document'."}), 400

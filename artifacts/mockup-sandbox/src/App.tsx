@@ -130,12 +130,19 @@ async function discoverApiBase(): Promise<string | null> {
     for (const port of ports) {
       try {
         const base = `http://${host}:${port}`;
-        const res = await fetchWithTimeout(`${base}/api/health`, {}, 1200);
+        const res = await fetchWithTimeout(`${base}/api/health`, {}, 5000);
+        
+        // FIX: Don't just check res.ok. Validate the JSON payload 
+        // to ensure it's the actual SafeLeak backend.
         if (res.ok) {
-          return base;
+          const data = await res.json();
+          // Check if response has the expected health structure (walrus and/or gemini fields)
+          if (data && (data.walrus !== undefined || data.gemini !== undefined)) {
+            return base;
+          }
         }
       } catch {
-        // Try next candidate
+        // Not our backend or not JSON, try next candidate
       }
     }
   }
@@ -174,7 +181,7 @@ function SafeLeakHome() {
       setApiBase(base);
 
       try {
-        const healthRes = await fetchWithTimeout(`${base}/api/health`, {}, 1500);
+        const healthRes = await fetchWithTimeout(`${base}/api/health`, {}, 5000);
         if (!healthRes.ok) {
           setWalrusStatus("offline");
           setGithubModelsStatus("unavailable");
@@ -271,7 +278,7 @@ function SafeLeakHome() {
             <span className="text-slate-200">{walrusStatus}</span>
           </div>
           <div>
-            <span className="text-amber-300">⚠ GitHub Models (gpt-4o):</span>{" "}
+            <span className="text-amber-300">⚠ GitHub Models (gpt-4o-mini):</span>{" "}
             <span className="text-slate-200">{githubModelsStatus}</span>
           </div>
           <p className="text-xs text-slate-500">
