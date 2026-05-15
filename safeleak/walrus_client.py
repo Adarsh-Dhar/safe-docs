@@ -6,6 +6,7 @@ logger = logging.getLogger(__name__)
 
 WALRUS_PUBLISHER = "https://publisher.walrus-testnet.walrus.space"
 WALRUS_AGGREGATOR = "https://aggregator.walrus-testnet.walrus.space"
+WALRUS_EXPLORER = "https://walruscan.com/testnet/blob"
 
 
 def upload_to_walrus(file_bytes: bytes, epochs: int = 5) -> dict:
@@ -29,12 +30,13 @@ def upload_to_walrus(file_bytes: bytes, epochs: int = 5) -> dict:
             raise ValueError(f"Unexpected Walrus response structure: {list(data.keys())}")
 
         blob_url = f"{WALRUS_AGGREGATOR}/v1/blobs/{blob_id}"
+        explorer_url = f"{WALRUS_EXPLORER}/{blob_id}"
         logger.info(f"Walrus upload success: {blob_id}")
-        return {"blob_id": blob_id, "url": blob_url, "success": True}
+        return {"blob_id": blob_id, "url": blob_url, "explorer_url": explorer_url, "success": True}
 
     except Exception as e:
         logger.error(f"Walrus upload failed: {e}")
-        return {"blob_id": None, "url": None, "success": False, "error": str(e)}
+        return {"blob_id": None, "url": None, "explorer_url": None, "success": False, "error": str(e)}
 
 
 def retrieve_from_walrus(blob_id: str) -> bytes:

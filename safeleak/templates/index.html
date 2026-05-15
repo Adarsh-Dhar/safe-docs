@@ -1080,6 +1080,7 @@
     // Card D — Walrus
     const blobId = data.walrus_blob_id;
     const walrusUrl = data.walrus_url;
+    const explorerUrl = data.walrus_explorer_url;
     const walrusError = data.walrus_error;
     const cardD = document.createElement('div');
     cardD.className = 'card';
@@ -1101,7 +1102,9 @@
           <button class="btn-small btn-copy" id="copyBtn" onclick="copyBlobId('${escHtml(blobId)}')">
             📋 Copy blobId
           </button>
-          ${walrusUrl ? `<a class="btn-small btn-link" href="${escHtml(walrusUrl)}" target="_blank" rel="noopener">↗ View on Walrus</a>` : ''}
+          ${walrusUrl ? `<a class="btn-small btn-link" href="${escHtml(walrusUrl)}" target="_blank" rel="noopener">↓ Download raw</a>` : ''}
+          ${explorerUrl ? `<a class="btn-small btn-link" href="${escHtml(explorerUrl)}" target="_blank" rel="noopener">🔍 View on Walruscan</a>` : ''}
+          ${data.agent_log_blob_id ? `<a class="btn-small btn-link" href="https://walruscan.com/testnet/blob/${escHtml(data.agent_log_blob_id)}" target="_blank">📋 Agent Log on Walrus</a>` : ''}
         </div>
         <div class="walrus-note">This document is now immutably stored on the Walrus decentralised network. Share this blobId as your verifiable receipt.</div>
       ` : `
@@ -1130,6 +1133,47 @@
       </p>
     `;
     grid.appendChild(cardE);
+
+    // Card F — On-Chain Proof (Sui)
+    const suiRecordId = data.sui_record_id || '';
+    const suiObjectUrl = data.sui_object_url || '';
+    const suiTxUrl = data.sui_explorer_url || '';
+    const sealUsed = data.seal_used || false;
+    const agentLogUrl = data.agent_log_explorer_url || '';
+
+    const cardF = document.createElement('div');
+    cardF.className = 'card card-full';
+    cardF.innerHTML = `
+      <div class="card-header">
+        <div class="card-icon icon-purple">⛓️</div>
+        <div>
+          <div class="card-title">On-Chain Proof of Scrubbing</div>
+          <div class="card-subtitle">Immutable LeakRecord on Sui blockchain</div>
+        </div>
+      </div>
+      ${suiRecordId ? `
+        <div class="blob-display">
+          <div class="blob-label">SUI OBJECT ID (LeakRecord)</div>
+          <div class="blob-id">${escHtml(suiRecordId)}</div>
+        </div>
+        <div class="blob-actions">
+          ${suiObjectUrl ? `<a class="btn-small btn-link" href="${escHtml(suiObjectUrl)}" target="_blank">↗ View Object on SuiScan</a>` : ''}
+          ${suiTxUrl ? `<a class="btn-small btn-link" href="${escHtml(suiTxUrl)}" target="_blank">↗ View Transaction</a>` : ''}
+          ${agentLogUrl ? `<a class="btn-small btn-link" href="${escHtml(agentLogUrl)}" target="_blank">📋 Agent Execution Log</a>` : ''}
+        </div>
+        <div class="walrus-note" style="margin-top:10px">
+          This Sui object proves the AI agent ran, what metadata it stripped,
+          and that the document was scrubbed before storage. The hashes are
+          tamper-proof and independently verifiable.
+        </div>
+        <div style="margin-top:10px;padding:8px 12px;background:${sealUsed ? 'var(--green-dim)' : 'var(--orange-dim)'};border:1px solid ${sealUsed ? 'var(--green)' : 'var(--orange)'};border-radius:8px;font-size:0.75rem;font-family:var(--mono);color:${sealUsed ? 'var(--green)' : 'var(--orange)'}">
+          ${sealUsed ? '🔐 Seal encrypted — only the authorised journalist can decrypt' : '⚠ Seal encryption unavailable — stored without encryption'}
+        </div>
+      ` : `
+        <div class="walrus-error-msg">⚠ On-chain registration unavailable — ${escHtml(data.sui_error || 'Sui not configured')}</div>
+      `}
+    `;
+    grid.appendChild(cardF);
 
     // Scroll to results
     resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });

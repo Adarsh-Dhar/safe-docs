@@ -117,8 +117,35 @@ async function fetchWithTimeout(
   }
 }
 
+// ---------------------------------------------------------------------------
+// FIX: discoverApiBase now correctly resolves to the Flask backend (port 5000)
+// instead of blindly returning window.location.origin (the Vite dev server
+// port, which has no /api/* routes).
+//
+// Resolution order:
+//  1. VITE_API_URL env var  — set this in .env.local for Replit deployments,
+//     e.g. VITE_API_URL=https://<repl>-5000.replit.dev
+//  2. localhost / 127.0.0.1 — swap whatever Vite port is in use for port 5000
+//  3. Otherwise — return origin as-is (production same-origin deploys)
+// ---------------------------------------------------------------------------
 function discoverApiBase(): string {
-  return window.location.origin;
+  // 1. Explicit env override (Replit external URLs, CI, etc.)
+  const envApiUrl = (import.meta as unknown as { env: Record<string, string> })
+    .env?.VITE_API_URL;
+  if (envApiUrl) return envApiUrl.replace(/\/$/, "");
+
+  const origin = window.location.origin;
+
+  // 2. Local dev: Vite runs on a random port; Flask always runs on 5000
+  const localhostMatch = origin.match(
+    /^(https?:\/\/(?:localhost|127\.0\.0\.1))(?::\d+)?$/,
+  );
+  if (localhostMatch) {
+    return `${localhostMatch[1]}:5000`;
+  }
+
+  // 3. Deployed / same-origin
+  return origin;
 }
 
 function statusTextFor(value: unknown, ok: string, fail: string): string {
@@ -251,14 +278,26 @@ function SafeLeakHome() {
             <span className="text-slate-200">{githubModelsStatus}</span>
           </div>
           <p className="text-xs text-slate-500">
-            Backend: {apiBase ?? 'not found — try hard-refresh (Cmd/Ctrl+Shift+R) or open the frontend URL shown by run.sh'}
+            Backend:{" "}
+            {apiBase ??
+              "not found — try hard-refresh (Cmd/Ctrl+Shift+R) or open the frontend URL shown by run.sh"}
           </p>
         </div>
 
+        {/* ------------------------------------------------------------------ */}
+        {/* Upload zone                                                         */}
+        {/* The label wrapping the hidden file input is what opens the picker.  */}
+        {/* The "Scrub + Upload" button only becomes enabled after a file is    */}
+        {/* selected — disabled={!selectedFile || busy} is intentional.        */}
+        {/* ------------------------------------------------------------------ */}
         <div className="rounded-2xl border-2 border-dashed border-slate-700 bg-slate-900/70 p-8 text-center">
           <div className="text-4xl mb-3">📄</div>
+
+          {/* Clicking anywhere in this label opens the OS file-picker */}
           <label className="cursor-pointer block">
-            <span className="text-lg font-medium">Drop document here or click to upload</span>
+            <span className="text-lg font-medium">
+              Drop document here or click to upload
+            </span>
             <input
               type="file"
               className="hidden"
@@ -266,15 +305,15 @@ function SafeLeakHome() {
               onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
             />
           </label>
+
           <p className="text-slate-400 text-sm mt-2">Max 10 MB per file</p>
+
           <div className="flex flex-wrap justify-center gap-2 mt-4 text-xs text-slate-300">
-            {[
-              "PDF",
-              "DOCX",
-              "TXT",
-              "JPG",
-            ].map((fmt) => (
-              <span key={fmt} className="px-2 py-1 rounded bg-slate-800 border border-slate-700">
+            {["PDF", "DOCX", "TXT", "JPG"].map((fmt) => (
+              <span
+                key={fmt}
+                className="px-2 py-1 rounded bg-slate-800 border border-slate-700"
+              >
                 {fmt}
               </span>
             ))}
@@ -282,15 +321,23 @@ function SafeLeakHome() {
 
           {selectedFile ? (
             <div className="mt-5 text-sm text-slate-300">
-              Selected: {selectedFile.name} ({Math.ceil(selectedFile.size / 1024)} KB)
+              Selected:{" "}
+              <span className="font-medium text-emerald-300">
+                {selectedFile.name}
+              </span>{" "}
+              ({Math.ceil(selectedFile.size / 1024)} KB)
             </div>
-          ) : null}
+          ) : (
+            <p className="mt-5 text-xs text-slate-500">
+              ↑ Click above to choose a file, then the button below will activate
+            </p>
+          )}
 
           <button
             type="button"
             onClick={() => void onScrub()}
             disabled={!selectedFile || busy}
-            className="mt-6 px-4 py-2 rounded-md bg-emerald-500 text-slate-950 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+            className="mt-6 px-4 py-2 rounded-md bg-emerald-500 text-slate-950 font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {busy ? "Scrubbing..." : "Scrub + Upload"}
           </button>
@@ -319,7 +366,9 @@ function SafeLeakHome() {
                 </a>
               ))
             ) : (
-              <span className="text-sm text-slate-500">No extra preview components found.</span>
+              <span className="text-sm text-slate-500">
+                No extra preview components found.
+              </span>
             )}
           </div>
         </div>

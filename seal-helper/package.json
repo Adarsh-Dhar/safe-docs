@@ -1,0 +1,13 @@
+{
+  "name": "safeleak-seal-helper",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "encrypt": "node seal_encrypt.js",
+    "decrypt": "node seal_decrypt.js"
+  },
+  "dependencies": {
+    "@mysten/seal": "latest",
+    "@mysten/sui": "latest"
+  }
+}

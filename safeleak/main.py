@@ -80,6 +80,8 @@ except Exception as e:
     scrubber = None
 
 from gemini_pii import check_gemini
+from sui_client import register_leak_on_chain, check_sui_connectivity
+from seal_client import encrypt_with_seal, check_seal_availability
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -99,6 +101,8 @@ def health():
         "spacy": "loaded" if scrubber and scrubber._analyzer is not None else "idle",
         "gemini": check_gemini(),
         "walrus": check_walrus_connectivity(),
+        "sui": check_sui_connectivity(),        # NEW
+        "seal": check_seal_availability(),      # NEW
     })
 
 
@@ -140,11 +144,49 @@ def scrub():
     clean_hash = hashlib.sha256(clean_bytes).hexdigest()
     gemini_status = result.get("gemini_status", "unavailable")
 
-    walrus_result = upload_to_walrus(clean_bytes)
+    # ── Step 1: Upload agent execution log to Walrus (MemWal) ──────
+    agent_log = {
+        "agent_version": "safeleak-v1.0",
+        "timestamp_utc": __import__('time').time(),
+        "input_filename": filename,
+        "original_hash": original_hash,
+        "clean_hash": clean_hash,
+        "actions": {
+            "metadata_fields_stripped": len(result["metadata_removed"]),
+            "metadata_detail": result["metadata_removed"],
+            "pii_items_redacted": result["pii_count"],
+            "pii_types": list(set(p["type"] for p in result["pii_found"])),
+            "presidio_used": True,
+            "gemini_status": gemini_status,
+        },
+    }
+    import json as _json
+    log_bytes = _json.dumps(agent_log, indent=2).encode()
+    log_walrus_result = upload_to_walrus(log_bytes, epochs=50)
+    agent_log_blob_id = log_walrus_result.get("blob_id") or ""
+
+    # ── Step 2: Register on Sui (creates LeakRecord, returns object ID) ──
+    sui_result = register_leak_on_chain(
+        original_hash=original_hash,
+        clean_hash=clean_hash,
+        walrus_blob_id="pending",
+        agent_log_blob_id=agent_log_blob_id,
+        seal_policy_id="pending",
+    )
+    sui_record_id = sui_result.get("record_id") or ""
+
+    # ── Step 3: Seal-encrypt the clean document ────────────────────
+    seal_result = encrypt_with_seal(clean_bytes, policy_id=sui_record_id)
+    bytes_to_store = seal_result["encrypted_bytes"]  # falls back to clean if Seal fails
+    seal_used = seal_result["seal_used"]
+
+    # ── Step 4: Upload (possibly encrypted) document to Walrus ────
+    walrus_result = upload_to_walrus(bytes_to_store, epochs=50)
     walrus_blob_id = walrus_result.get("blob_id")
     walrus_url = walrus_result.get("url")
+    walrus_explorer_url = walrus_result.get("explorer_url")       # NEW field
     walrus_error = None if walrus_result.get("success") else (
-        walrus_result.get("error", "Walrus upload failed — document scrubbed successfully but not stored")
+        walrus_result.get("error", "Walrus upload failed")
     )
 
     job_id = str(uuid.uuid4())
@@ -154,8 +196,11 @@ def scrub():
         "metadata_removed": result["metadata_removed"],
         "pii_found": result["pii_found"],
         "walrus_blob_id": walrus_blob_id,
-        "clean_bytes": clean_bytes,
+        "clean_bytes": bytes_to_store,          # store encrypted version
         "filename": filename,
+        "sui_record_id": sui_record_id,
+        "agent_log_blob_id": agent_log_blob_id,
+        "seal_used": seal_used,
     })
 
     response = {
@@ -169,10 +214,24 @@ def scrub():
         "gemini_status": gemini_status,
         "walrus_blob_id": walrus_blob_id,
         "walrus_url": walrus_url,
+        "walrus_explorer_url": walrus_explorer_url,           # NEW
+        "agent_log_blob_id": agent_log_blob_id,               # NEW
+        "agent_log_url": f"https://aggregator.walrus-testnet.walrus.space/v1/blobs/{agent_log_blob_id}" if agent_log_blob_id else None,
+        "agent_log_explorer_url": f"https://walruscan.com/testnet/blob/{agent_log_blob_id}" if agent_log_blob_id else None,
+        "sui_record_id": sui_record_id,                       # NEW
+        "sui_tx_digest": sui_result.get("tx_digest"),         # NEW
+        "sui_explorer_url": sui_result.get("explorer_url"),   # NEW
+        "sui_object_url": sui_result.get("suiscan_object_url"), # NEW
+        "seal_used": seal_used,                               # NEW
+        "seal_policy_id": sui_record_id if seal_used else None, # NEW
         "status": "success",
     }
     if walrus_error:
         response["walrus_error"] = walrus_error
+    if not sui_result.get("success"):
+        response["sui_error"] = sui_result.get("error")
+    if not seal_result.get("success"):
+        response["seal_error"] = seal_result.get("error")
 
     return jsonify(response)
 
