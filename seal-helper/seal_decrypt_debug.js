@@ -5,32 +5,18 @@ import { Transaction } from '@mysten/sui/transactions';
 import { fromHex } from '@mysten/sui/utils';
 import fs from 'fs';
 
-/**
- * Usage: node seal_decrypt.js <encrypted_path> <sui_private_key> <output_path>
- *
- * The journalist runs this locally with their AccessCap in their wallet.
- * Seal key servers verify they hold the cap before issuing key shares.
- */
-
 const [,, encryptedPath, privateKeyB64, outputPath] = process.argv;
-
-if (!encryptedPath || !privateKeyB64) {
-    console.error(JSON.stringify({
-        success: false,
-        error: 'Usage: node seal_decrypt.js <encrypted_path> <private_key_b64> <output_path>'
-    }));
-    process.exit(1);
-}
 
 const PACKAGE_ID = process.env.SUI_PACKAGE_ID;
 const RECORD_OBJECT_ID = process.env.SEAL_RECORD_OBJECT_ID;
 const ACCESS_CAP_OBJECT_ID = process.env.SEAL_CAP_OBJECT_ID;
-const SESSION_TTL_MIN = Number(process.env.SEAL_SESSION_TTL_MIN || '30');
+const SESSION_TTL_MIN = Number(process.env.SEAL_SESSION_TTL_MIN || '1'); // Try 1 minute
 
 try {
     const keypair = privateKeyB64.startsWith('suiprivkey')
         ? Ed25519Keypair.fromSecretKey(privateKeyB64)
         : Ed25519Keypair.fromSecretKey(Buffer.from(privateKeyB64, 'base64'));
+    
     const suiClient = new SuiJsonRpcClient({
         url: getJsonRpcFullnodeUrl('testnet'),
         network: 'testnet',
@@ -51,12 +37,8 @@ try {
     const encryptedBytes = Uint8Array.from(fs.readFileSync(encryptedPath));
     const encryptedObject = EncryptedObject.parse(encryptedBytes);
 
-    // Try without transaction first to isolate the issue
-    let txBytes = undefined;
-    
-    // Only build transaction if we have the necessary environment variables
+    const tx = new Transaction();
     if (RECORD_OBJECT_ID && ACCESS_CAP_OBJECT_ID) {
-        const tx = new Transaction();
         tx.moveCall({
             target: `${PACKAGE_ID}::seal_policy::seal_approve`,
             arguments: [
@@ -65,33 +47,45 @@ try {
                 tx.object(RECORD_OBJECT_ID),
             ],
         });
-        txBytes = await tx.build({ client: suiClient, onlyTransactionKind: true });
     }
+    const txBytes = await tx.build({ client: suiClient, onlyTransactionKind: true });
 
-    // Create session key (do NOT pass signer here - we'll sign the personal message explicitly)
+    console.error(`[DEBUG] Creating session key with TTL=${SESSION_TTL_MIN} minutes`);
+    const now = Date.now();
+    
     const sessionKey = await SessionKey.create({
         address: keypair.getPublicKey().toSuiAddress(),
         packageId: PACKAGE_ID,
         ttlMin: SESSION_TTL_MIN,
         suiClient,
     });
+    
+    console.error(`[DEBUG] Session key created in ${Date.now() - now}ms`);
+    console.error(`[DEBUG] Session key address: ${sessionKey.getAddress()}`);
+    console.error(`[DEBUG] Session key isExpired: ${sessionKey.isExpired()}`);
+    console.error(`[DEBUG] Session key toString: ${sessionKey.toString()}`);
 
-    // CRITICAL: Session key must be signed before use
-    // Get the personal message that needs to be signed (synchronous call)
+    // Get and sign personal message
     const personalMessage = sessionKey.getPersonalMessage();
+    console.error(`[DEBUG] Personal message type: ${typeof personalMessage}`);
     
-    // Sign the personal message with the keypair
-    // Destructure to get the signature in the correct format
     const { signature } = await keypair.signPersonalMessage(personalMessage);
+    console.error(`[DEBUG] Signature length: ${signature.length}`);
     
-    // Set the signature on the session key (required for validation by key servers)
     sessionKey.setPersonalMessageSignature(signature);
+    console.error(`[DEBUG] Signature set on session key`);
+    console.error(`[DEBUG] Session key after signing isExpired: ${sessionKey.isExpired()}`);
 
+    console.error(`[DEBUG] Starting decrypt with TTL=${SESSION_TTL_MIN} min...`);
+    const decryptStart = Date.now();
+    
     const decryptedData = await sealClient.decrypt({
         data: encryptedBytes,
         sessionKey,
         txBytes,
     });
+    
+    console.error(`[DEBUG] Decrypt completed in ${Date.now() - decryptStart}ms`);
 
     const finalOutputPath = outputPath || encryptedPath.replace('.sealed', '.decrypted');
     fs.writeFileSync(finalOutputPath, Buffer.from(decryptedData));

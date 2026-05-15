@@ -1,10 +1,13 @@
 import { SealClient } from '@mysten/seal';
-import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from '@mysten/sui/jsonRpc';
+import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
+import { fromHex, toHex } from '@mysten/sui/utils';
 import fs from 'fs';
+import { randomBytes } from 'crypto';
 
 /**
  * Usage: node seal_encrypt.js <input_path> <policy_id> <output_path>
- *
+ * 
  * policy_id: the LeakRecord Sui object ID — controls who can decrypt.
  * Seal key servers will call seal_approve() on the contract before
  * issuing key shares.
@@ -13,9 +16,9 @@ import fs from 'fs';
 const [,, inputPath, policyId, outputPath] = process.argv;
 
 if (!inputPath || !policyId) {
-    console.error(JSON.stringify({
-        success: false,
-        error: 'Usage: node seal_encrypt.js <input_path> <policy_id> [output_path]'
+    console.error(JSON.stringify({ 
+        success: false, 
+        error: 'Usage: node seal_encrypt.js <input_path> <policy_id> [output_path]' 
     }));
     process.exit(1);
 }
@@ -27,13 +30,11 @@ if (!PACKAGE_ID) {
 }
 
 try {
-    const suiClient = new SuiJsonRpcClient({
-        url: getJsonRpcFullnodeUrl('testnet'),
-        network: 'testnet',
-    });
-
+    const suiClient = new SuiClient({ url: getFullnodeUrl('testnet') });
+    
     const fileBytes = fs.readFileSync(inputPath);
-
+    
+    // Initialize SealClient with verified testnet key server
     const client = new SealClient({
         suiClient,
         serverConfigs: [
@@ -45,20 +46,28 @@ try {
         ],
         verifyKeyServers: false,
     });
-
-    const id = policyId;
-
+    
+    // Create ID as combination of policyId and a nonce
+    const policyBytes = fromHex(policyId);
+    const nonce = randomBytes(32);
+    const id = toHex(new Uint8Array([...policyBytes, ...nonce]));
+    
+    // Encrypt using SealClient
     const result = await client.encrypt({
-        threshold: 1,
+        threshold: 2,
         packageId: PACKAGE_ID,
         id,
         data: new Uint8Array(fileBytes),
     });
-
+    
+    // The encryptedObject is already a Uint8Array from the SDK
     const encryptedBytes = result.encryptedObject;
+
+    // Write encrypted data to file
     const finalOutputPath = outputPath || (inputPath + '.sealed');
     fs.writeFileSync(finalOutputPath, Buffer.from(encryptedBytes));
 
+    // Output result as JSON for Python to parse
     console.log(JSON.stringify({
         success: true,
         output_path: finalOutputPath,
@@ -66,6 +75,7 @@ try {
         original_size: fileBytes.length,
         encrypted_size: encryptedBytes.length,
     }));
+
 } catch (err) {
     console.error(JSON.stringify({
         success: false,

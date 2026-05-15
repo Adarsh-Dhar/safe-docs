@@ -103,6 +103,7 @@ def register_leak_on_chain(
 def grant_access_on_chain(record_object_id: str, journalist_address: str) -> dict:
     """
     Calls safeleak::safeleak::grant_access to issue AccessCap to journalist.
+    Returns cap_id (the AccessCap object ID) for use in decryption.
     """
     if not PACKAGE_ID:
         return {"success": False, "error": "SUI_PACKAGE_ID not configured"}
@@ -119,10 +120,18 @@ def grant_access_on_chain(record_object_id: str, journalist_address: str) -> dic
             "--gas-budget", SUI_GAS_BUDGET,
         ])
 
+        # Extract created AccessCap object ID
+        cap_id = None
+        for change in data.get("objectChanges", []):
+            if change.get("type") == "created" and "AccessCap" in change.get("objectType", ""):
+                cap_id = change["objectId"]
+                break
+
         tx_digest = data.get("digest", "")
         return {
             "success": True,
             "tx_digest": tx_digest,
+            "cap_id": cap_id,
             "explorer_url": f"https://suiscan.xyz/testnet/tx/{tx_digest}",
         }
     except Exception as e:

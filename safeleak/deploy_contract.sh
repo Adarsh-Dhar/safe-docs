@@ -20,7 +20,7 @@ echo "Active env: $(sui client active-env)"
 echo "Active address: $(sui client active-address)"
 
 # Get testnet SUI if needed
-BALANCE=$(sui client balance --json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['totalBalance'] if d else '0')" 2>/dev/null || echo "0")
+BALANCE=$(sui client balance --json 2>/dev/null | python3 -c $'import sys, json\n\ndata = json.load(sys.stdin)\n\ndef walk(obj):\n    if isinstance(obj, dict):\n        if "coinObjectId" in obj and "balance" in obj:\n            return int(obj.get("balance") or 0)\n        if "totalBalance" in obj:\n            return int(obj.get("totalBalance") or 0)\n        return sum(walk(value) for value in obj.values())\n    if isinstance(obj, list):\n        return sum(walk(value) for value in obj)\n    return 0\n\nprint(walk(data))' 2>/dev/null || echo "0")
 echo "Current balance: $BALANCE MIST"
 
 if [ "$BALANCE" = "0" ] || [ "$BALANCE" = "" ]; then

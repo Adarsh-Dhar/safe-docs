@@ -7,7 +7,7 @@
     "decrypt": "node seal_decrypt.js"
   },
   "dependencies": {
-    "@mysten/seal": "latest",
-    "@mysten/sui": "latest"
+    "@mysten/seal": "1.1.3",
+    "@mysten/sui": "2.16.2"
   }
 }
