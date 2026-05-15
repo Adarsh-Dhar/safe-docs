@@ -1,4 +1,4 @@
-import { SealClient, EncryptedObject, SessionKey } from '@mysten/seal';
+import { SealClient, SessionKey } from '@mysten/seal';
 import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from '@mysten/sui/jsonRpc';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Transaction } from '@mysten/sui/transactions';
@@ -49,23 +49,25 @@ try {
     });
 
     const encryptedBytes = Uint8Array.from(fs.readFileSync(encryptedPath));
-    const encryptedObject = EncryptedObject.parse(encryptedBytes);
 
-    // Try without transaction first to isolate the issue
+    // Build required seal_approve PTB and require txBytes (no silent fallback)
     let txBytes = undefined;
-    
-    // Only build transaction if we have the necessary environment variables
-    if (RECORD_OBJECT_ID && ACCESS_CAP_OBJECT_ID) {
-        const tx = new Transaction();
-        tx.moveCall({
-            target: `${PACKAGE_ID}::seal_policy::seal_approve`,
-            arguments: [
-                tx.pure.vector('u8', fromHex(RECORD_OBJECT_ID)),
-                tx.object(ACCESS_CAP_OBJECT_ID),
-                tx.object(RECORD_OBJECT_ID),
-            ],
-        });
-        txBytes = await tx.build({ client: suiClient, onlyTransactionKind: true });
+    if (!PACKAGE_ID || !RECORD_OBJECT_ID || !ACCESS_CAP_OBJECT_ID) {
+        throw new Error('Missing PACKAGE_ID, RECORD_OBJECT_ID, or ACCESS_CAP_OBJECT_ID — cannot build PTB');
+    }
+
+    const tx = new Transaction();
+    tx.moveCall({
+        target: `${PACKAGE_ID}::seal_policy::seal_approve`,
+        arguments: [
+            tx.pure.vector('u8', fromHex(RECORD_OBJECT_ID)),
+            tx.object(ACCESS_CAP_OBJECT_ID),
+            tx.object(RECORD_OBJECT_ID),
+        ],
+    });
+    txBytes = await tx.build({ client: suiClient, onlyTransactionKind: true });
+    if (!txBytes || txBytes.length === 0) {
+        throw new Error('Failed to build seal_approve transaction bytes — txBytes empty');
     }
 
     // Create session key (do NOT pass signer here - we'll sign the personal message explicitly)
@@ -80,11 +82,9 @@ try {
     // Get the personal message that needs to be signed (synchronous call)
     const personalMessage = sessionKey.getPersonalMessage();
     
-    // Sign the personal message with the keypair
-    // Destructure to get the signature in the correct format
-    const { signature } = await keypair.signPersonalMessage(personalMessage);
-    
-    // Set the signature on the session key (required for validation by key servers)
+    // Sign the personal message with the keypair and pass raw signature bytes
+    const signRes = await keypair.signPersonalMessage(personalMessage);
+    const signature = signRes?.signature || signRes;
     sessionKey.setPersonalMessageSignature(signature);
 
     const decryptedData = await sealClient.decrypt({

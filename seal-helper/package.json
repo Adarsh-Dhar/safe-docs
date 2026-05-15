@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "encrypt": "node seal_encrypt.js",
-    "decrypt": "node seal_decrypt.js"
+    "decrypt": "node seal_decrypt.js",
+    "seal:smoke": "bash ./seal_smoke_test.sh"
   },
   "dependencies": {
     "@mysten/seal": "1.1.3",
