@@ -5,6 +5,11 @@ import subprocess
 import tempfile
 import time
 
+from dotenv import load_dotenv
+
+# Load .env BEFORE reading environment variables
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
 PACKAGE_ID = os.environ.get("SUI_PACKAGE_ID", "")

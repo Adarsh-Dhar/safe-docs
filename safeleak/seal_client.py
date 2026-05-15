@@ -4,6 +4,11 @@ import os
 import subprocess
 import tempfile
 
+from dotenv import load_dotenv
+
+# Load .env BEFORE reading environment variables
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
 SEAL_HELPER_DIR = os.path.join(os.path.dirname(__file__), '..', 'seal-helper')
